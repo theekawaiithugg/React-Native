@@ -1,0 +1,597 @@
+// Assignment 7.3: Pomodoro Timer with Tasks by Alexis Martinez 2025
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { StyleSheet, ScrollView, Text, View, Vibration, TextInput, Pressable, FlatList, SafeAreaView } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Audio } from 'expo-av';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import * as Speech from 'expo-speech';
+
+
+// Default durations
+const DEFAULT_POMODORO_TIME = 25 * 60;
+const DEFAULT_SHORT_BREAK_TIME = 5 * 60;
+const DEFAULT_LONG_BREAK_TIME = 15 * 60;
+
+// Sound Files
+const SOUND_FILES = {
+  Backgroundm: require('./assets/Treasure_Hunt.mp3'),
+  Ring: require('./assets/Phone_Ringing.mp3'),
+  Discord: require('./assets/discord-notification.mp3')
+};
+
+const Stack = createStackNavigator();
+
+// ---------------- Home Screen ----------------
+function HomeScreen({ navigation }) {
+  const [time, setTime] = useState(DEFAULT_POMODORO_TIME);
+  const [isRunning, setIsRunning] = useState(false);
+  const [mode, setMode] = useState('POMODORO');
+  const [customPomodoro, setCustomPomodoro] = useState(25);
+  const [customShortBreak, setCustomShortBreak] = useState(5);
+  const [customLongBreak, setCustomLongBreak] = useState(15);
+  const [backgroundSound, setBackgroundSound] = useState(null);
+  const [backgroundPlaying, setBackgroundPlaying] = useState(false);
+  const [currentTask, setCurrentTask] = useState('');
+  const [currentNote, setCurrentNote] = useState(''); // ← Add this!
+  const [tasks, setTasks] = useState([]);
+  const [streak, setStreak] = useState(0);
+  const [taskCount, setTaskCount] = useState(0);
+  const timerRef = useRef(null);
+
+  // Save to AsyncStorage
+  const saveState = useCallback(async () => {
+    try {
+      await AsyncStorage.setItem('timerState', JSON.stringify({
+        time, isRunning, mode, customPomodoro, customShortBreak, customLongBreak
+      }));
+      await AsyncStorage.setItem('tasks', JSON.stringify(tasks));
+      await AsyncStorage.setItem('streak', streak.toString());
+      await AsyncStorage.setItem('taskCount', taskCount.toString());
+
+
+    } catch (error) {
+      console.error('Failed to save state:', error);
+    }
+  }, [time, isRunning, mode, customPomodoro, customShortBreak, customLongBreak, tasks,streak, taskCount]);
+
+  // Load from AsyncStorage
+  const loadState = async () => {
+    try {
+      const state = await AsyncStorage.getItem('timerState');
+      const storedTasks = await AsyncStorage.getItem('tasks');
+      const storedStreak = await AsyncStorage.getItem('streak');
+      const storedTaskCount = await AsyncStorage.getItem('taskCount');
+      if (state) {
+        const parsed = JSON.parse(state);
+        setTime(parsed.time);
+        setIsRunning(parsed.isRunning);
+        setMode(parsed.mode);
+        setCustomPomodoro(parsed.customPomodoro);
+        setCustomShortBreak(parsed.customShortBreak);
+        setCustomLongBreak(parsed.customLongBreak);
+      }
+      if (storedTasks) {
+        setTasks(JSON.parse(storedTasks));
+      }
+
+      if (storedStreak) setStreak(parseInt(storedStreak));
+      if (storedTaskCount !== null) setTaskCount(parseInt(storedTaskCount));
+    } catch (error) {
+      console.error('Failed to load state:', error);
+    }
+  };
+
+  useEffect(() => { loadState(); }, []);
+  useEffect(() => {
+  saveState();
+}, [saveState]);
+
+  useEffect(() => {
+  if (isRunning && !timerRef.current) {
+    timerRef.current = setInterval(() => {
+      setTime((prev) => {
+        if (prev <= 1) {
+          clearTimer();
+          Vibration.vibrate();
+          playSoundEffect('Ring');
+          Speech.speak('Time is up! Take a break.');
+          setIsRunning(false);
+          if (mode === 'POMODORO') setStreak((prev) => prev + 1);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  } else {
+    clearTimer();
+  }
+
+  return () => clearTimer();
+}, [isRunning]);
+
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const playSoundEffect = async (soundName) => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(SOUND_FILES[soundName]);
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          sound.unloadAsync();
+        }
+      });
+    } catch (error) {
+      console.error('Error playing sound effect:', error);
+    }
+  };
+
+  const playBackgroundMusic = async () => {
+    if (backgroundSound) {
+      await backgroundSound.playAsync();
+      setBackgroundPlaying(true);
+    } else {
+      const { sound } = await Audio.Sound.createAsync(SOUND_FILES.Backgroundm);
+      setBackgroundSound(sound);
+      await sound.setIsLoopingAsync(true);
+      await sound.setVolumeAsync(0.3);
+      await sound.playAsync();
+      setBackgroundPlaying(true);
+    }
+  };
+
+  const stopBackgroundMusic = async () => {
+    if (backgroundSound) {
+      await backgroundSound.stopAsync();
+      setBackgroundPlaying(false);
+    }
+  };
+
+  const formatTime = (seconds) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+  };
+
+  const handleReset = () => {
+    setIsRunning(false);
+    if (mode === 'POMODORO') setTime(customPomodoro * 60);
+    if (mode === 'SHORT_BREAK') setTime(customShortBreak * 60);
+    if (mode === 'LONG_BREAK') setTime(customLongBreak * 60);
+  };
+
+  const switchMode = (newMode) => {
+    setMode(newMode);
+    setIsRunning(false);
+    const timeMap = {
+      POMODORO: customPomodoro * 60,
+      SHORT_BREAK: customShortBreak * 60,
+      LONG_BREAK: customLongBreak * 60
+    };
+    setTime(timeMap[newMode]);
+  };
+
+  const addTask = () => {
+    if (currentTask.trim() !== '') {
+      const newTasks = [...tasks, 
+      { id: Date.now().toString(), 
+      text: currentTask,
+      note: currentNote  }];
+      
+      setTasks(newTasks);
+      setCurrentTask('');
+      setCurrentNote('');
+    }
+  };
+
+  const deleteTask = (id) => {
+    const updatedTasks = tasks.filter((task) => task.id !== id);
+    setTasks(updatedTasks);
+     
+    //const newPoints = points + 1;
+    const newStreak = streak + 1;
+    const newTaskCount = taskCount + 1;
+
+    //setPoints(newPoints);
+    setStreak(newStreak);
+    setTaskCount(newTaskCount);
+
+  //  AsyncStorage.setItem('points', newPoints.toString());
+    AsyncStorage.setItem('tasks', JSON.stringify(updatedTasks));
+    AsyncStorage.setItem('streak', newStreak.toString());
+    AsyncStorage.setItem('taskCount', newTaskCount.toString());
+    Speech.speak('Task completed!');
+    playSoundEffect('Discord');
+
+};
+  return (
+  <SafeAreaView style={styles.container}>
+    <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
+      <Text style={styles.title}>Pomodoro Timer</Text>
+      <StudyStreak streak={streak} />
+       <TaskStreak taskCount={taskCount} />
+
+      <Text style={styles.mode}>{mode.replace('_', ' ')}</Text>
+      <Text style={styles.timer}>{formatTime(time)}</Text>
+
+      {/* Buttons */}
+      <View style={styles.buttonContainer}>
+        <Pressable style={styles.button} onPress={() => {
+          setIsRunning(!isRunning);
+          playSoundEffect('Discord');
+          if (!isRunning) {
+            Speech.speak('Timer started. Stay focused.');
+          } else {
+            Speech.speak('Timer paused.');
+          }
+        }}>
+          <Text style={styles.buttonText}>{isRunning ? 'Pause' : 'Start'}</Text>
+        </Pressable>
+
+        <Pressable style={styles.button} onPress={() => {
+          handleReset();
+          Speech.speak('Timer reset.');
+        }}>
+          <Text style={styles.buttonText}>Reset</Text>
+        </Pressable>
+
+        <Pressable style={[
+          styles.button,
+          { backgroundColor: backgroundPlaying ? '#e74c3c' : '#2ecc71' }
+        ]}
+          onPress={() => backgroundPlaying ? stopBackgroundMusic() : playBackgroundMusic()}
+        >
+          <Text style={styles.buttonText}>
+            {backgroundPlaying ? 'Stop Music' : 'Play Music'}
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Mode Switching */}
+      <View style={styles.modeContainer}>
+        {['POMODORO', 'SHORT_BREAK', 'LONG_BREAK'].map((m) => (
+          <Pressable key={m} style={styles.modeButton} onPress={() => {
+            switchMode(m);
+            if (m === 'POMODORO') Speech.speak('Focus Mode Activated.');
+            if (m === 'SHORT_BREAK') Speech.speak('Short Break. Relax.');
+            if (m === 'LONG_BREAK') Speech.speak('Long Break. Great job!');
+          }}>
+            <Text style={styles.buttonText}>{m.replace('_', ' ')}</Text>
+          </Pressable>
+        ))}
+        
+      </View>
+    <View style={styles.customSettingsContainer}>
+            <Text style={styles.customSettingsTitle}>Custom Settings (Minutes):</Text>
+            <View style={styles.inputContainer}>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={String(customPomodoro)}
+                onChangeText={(text) => setCustomPomodoro(Number(text) || 0)}
+                placeholder="Pomodoro"
+              />
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={String(customShortBreak)}
+                onChangeText={(text) => setCustomShortBreak(Number(text) || 0)}
+                placeholder="Short Break"
+              />
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={String(customLongBreak)}
+                onChangeText={(text) => setCustomLongBreak(Number(text) || 0)}
+                placeholder="Long Break"
+              />
+            </View>
+          </View>
+      {/* Tasks Section */}
+      <View style={styles.taskSection}>
+        <Text style={styles.customSettingsTitle}>Tasks</Text>
+        <View style={{ flexDirection: 'row', marginBottom: 10 }}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginRight: 10 }]}
+            value={currentTask}
+            onChangeText={setCurrentTask}
+            placeholder="Enter a new task"
+          />
+          <TextInput
+            style={[styles.input, { flex: 1, marginTop: 5 }]}
+            value={currentNote}
+            onChangeText={setCurrentNote}
+            placeholder="Add a note (optional)"
+          />
+          <Pressable style={styles.addTaskButton} onPress={addTask}>
+            <Text style={styles.buttonText}>Add</Text>
+          </Pressable>
+        </View>
+
+        <FlatList
+          data={tasks}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View style={styles.taskItem}>
+              <Text>{item.text}</Text>
+              {item.note ? <Text style={styles.taskNote}>📝 {item.note}</Text> : null}
+              <Pressable
+                style={styles.deleteButton}
+                onPress={() => {
+                  const updatedTasks = tasks.filter((task) => task.id !== item.id);
+                  setTasks(updatedTasks);
+
+                  const newTaskCount = taskCount + 1;
+                  setTaskCount(newTaskCount);
+
+                  AsyncStorage.setItem('tasks', JSON.stringify(updatedTasks));
+                  AsyncStorage.setItem('taskCount', newTaskCount.toString());
+
+                  Speech.speak('Task completed!');
+                  playSoundEffect('Discord');
+                }}
+              >
+                <Text style={{ fontSize: 10, color: 'black' }}>Done</Text>
+              </Pressable>
+            </View>
+          )}
+        />
+
+            </View>
+
+
+      {/* Navigation Buttons */}
+      <View style={{ alignItems: 'center', marginTop: 20 }}>
+        <Pressable style={styles.taskPageButton} onPress={() => navigation.navigate('Task List')}>
+          <Text style={styles.buttonText}>View All Tasks</Text>
+        </Pressable>
+      </View>
+      <View style={{ alignItems: 'center', marginTop: 10 }}>
+        <Pressable style={styles.studyPageButton} onPress={() => navigation.navigate('Study Info')}>
+          <Text style={styles.buttonText}>Study Info</Text>
+        </Pressable>
+      </View>
+
+    </ScrollView>
+  </SafeAreaView>
+);
+}
+function StudyStreak({ streak }) {
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <Text style={{ textAlign: 'center', fontSize: 16 }}>🔥 Study Streak: {streak} sessions</Text>
+    </View>
+  );
+}
+function TaskStreak({ taskCount }) {
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <Text style={{ textAlign: 'center', fontSize: 16 }}>✅ Tasks Completed: {taskCount} ✅</Text>
+    </View>
+  );
+}
+
+
+// ---------------- Task Screen ----------------
+function TaskScreen({ navigation }) {
+  const [tasks, setTasks] = useState([]);
+
+  useEffect(() => {
+    const loadTasks = async () => {
+      try {
+        const storedTasks = await AsyncStorage.getItem('tasks');
+        if (storedTasks) {
+          setTasks(JSON.parse(storedTasks));
+        }
+      } catch (error) {
+        console.error('Failed to load tasks:', error);
+      }
+    };
+    loadTasks();
+  }, []);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <Text style={styles.title}>All Saved Tasks</Text>
+      <FlatList
+        data={tasks}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.taskItem}>
+            <Text>{item.text}</Text>
+          </View>
+        )}
+      />
+      <View style={{ alignItems: 'center', marginTop: 20 }}>
+        <Pressable style={styles.button} onPress={() => navigation.goBack()}>
+          <Text style={styles.buttonText}>Back</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+//----------------------Studyinforscreenn----------
+function StudyInfoScreen({ navigation }) {
+  return (
+    <SafeAreaView style={styles.container}>
+      <Text style={styles.title}>Study Tips & Info</Text>
+
+      <View style={{ marginBottom: 20 }}>
+        <Text style={styles.infoText}>🧠 Tip 1: Study in 25-minute blocks (Pomodoro Method)!</Text>
+        <Text style={styles.infoText}>📚 Tip 2: Take 5-minute breaks to rest your mind.</Text>
+        <Text style={styles.infoText}>💧 Tip 3: Drink water and stay hydrated.</Text>
+        <Text style={styles.infoText}>📝 Tip 4: Write short notes during breaks.</Text>
+        <Text style={styles.infoText}>🎯 Tip 5: Set small, achievable goals each study session.</Text>
+      </View>
+
+      <Pressable style={styles.button} onPress={() => navigation.goBack()}>
+        <Text style={styles.buttonText}>Back</Text>
+      </Pressable>
+    </SafeAreaView>
+  );
+}
+
+
+// ---------------- Main App ----------------
+export default function App() {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator>
+        <Stack.Screen name="Pomodoro Timer" component={HomeScreen} />
+        <Stack.Screen name="Task List" component={TaskScreen} />
+        <Stack.Screen name="Study Info" component={StudyInfoScreen} />
+
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+// ---------------- Styles ----------------
+const styles = StyleSheet.create({
+  // Main container with soft gray-blue background
+  container: {
+    flex: 1,
+    padding: 20,
+    paddingTop: 40,
+    backgroundColor: '#eef2f3', // light, airy gray-blue
+  },
+
+customSettingsContainer: { marginBottom: 20 },
+  customSettingsTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
+  inputContainer: { gap: 10, alignItems: 'center' },
+  input: {
+    width: 100,
+    height: 40,
+    borderColor: '#ccc',
+    borderWidth: 1,
+    borderRadius: 5,
+    paddingHorizontal: 10,
+    textAlign: 'center'
+  },
+
+  // Large centered title
+  title: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    marginBottom: 10,
+    textAlign: 'center',
+    color: '#2c3e50', // deep calm blue-gray
+  },
+
+  // Displays current mode (e.g., Pomodoro, Break)
+  mode: {
+    fontSize: 18,
+    textAlign: 'center',
+    marginBottom: 5,
+    color: '#34495e', // cool navy-gray
+  },
+
+  // Timer text
+  timer: {
+    fontSize: 48,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 20,
+    color: '#1abc9c', // soft mint green
+  },
+
+  // Controls button row
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    marginBottom: 20,
+  },
+
+  // Primary button style
+  button: {
+    backgroundColor: '#74b9ff', // pastel blue
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  // Button text color
+  buttonText: {
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+
+  // Mode selection container
+  modeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 20,
+  },
+
+  // Mode switch button
+  modeButton: {
+    backgroundColor: '#a29bfe', // lavender blue
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  // Task section background
+  taskSection: {
+    flex: 1,
+  },
+
+  // Add task button with calm green
+  addTaskButton: {
+    backgroundColor: '#55efc4', // soft teal-green
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  // Individual task item layout
+  taskItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 10,
+    borderBottomColor: '#dfe6e9', // soft border
+    borderBottomWidth: 1,
+  },
+
+  // Task delete button
+  deleteButton: {
+    backgroundColor: '#dfe6e9',
+    borderRadius: 15,
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Button for navigating to task list page
+  taskPageButton: {
+    backgroundColor: '#81ecec', // soft blue-teal
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  // Button for accessing study tips/info
+  studyPageButton: {
+    backgroundColor: '#ffeaa7', // soft yellow
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  // General purpose information text
+  infoText: {
+    fontSize: 16,
+    marginBottom: 10,
+    color: '#636e72', // soft dark gray
+  },
+  taskNote: {
+  fontSize: 12,
+  color: '#636e72',
+  fontStyle: 'italic',
+},
+
+});
+
